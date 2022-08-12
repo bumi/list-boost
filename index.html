@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Alby Boost Viewer</title>
+  </head>
+  <body>
+    <h1>Your Boostagrams</h1>
+    <button id="login">Login with Alby</button>
+    <hr>
+    <div id="boosts"></div>
+    <script type="module">
+      import axios from 'https://cdn.skypack.dev/axios';
+      import CryptoES from 'https://cdn.skypack.dev/crypto-es';
+
+
+      const authorizeEndpoint = "https://getalby.com/oauth";
+      const tokenEndpoint = "https://api.getalby.com/oauth/token";
+      const clientId = "alby_internal_client";
+      const clientSecret = "zblqaACzgqUmHjLZdfXJ";
+      const scope = "invoices:read"
+
+
+      // Do an API call with the access token
+      // Here we load the latest invoices of the authorized accoutn
+      const loadBoosts = async () => {
+        const access_token = window.sessionStorage.getItem("alby_access_token");
+        try {
+          const invoiceResponse = await axios({
+            method: "GET",
+            url: "https://api.getalby.com/invoices/incoming",
+            headers: { 'Authorization': `Bearer ${access_token}` }
+          });
+
+          const boostElement = document.getElementById("boosts");
+          invoiceResponse.data.forEach((invoice) => {
+            if (invoice.boostagram) {
+              const boost = document.createElement('p');
+              boost.innerHTML = JSON.stringify(invoice.boostagram);
+              boostElement.appendChild(boost);
+            }
+          });
+        } catch(e) {
+          if (!axios.isAxiosError(error)) {
+
+          }
+          if (error.response.status === 401) {
+            await refreshAccessToken();
+            // TODO: only do this once... the request could fail again
+            loadBoosts();
+          }
+        }
+      }
+
+      const refreshAccessToken = async () => {
+        const refresh_token = window.sessionStorage.getItem("alby_refresh_token");
+        const tokenResponse = await axios({
+          method: "POST",
+          url: tokenEndpoint,
+          auth: { username: clientId, password: clientSecret},
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          maxRedirects: 0,
+          data: `refresh_token=${refresh_token}&client_id=${clientId}&grant_type=refresh_token`
+        });
+
+        // TODO: check response
+
+        // we got the access token and use it to load the invoices
+        window.sessionStorage.setItem("alby_access_token", tokenResponse.data.access_token);
+        window.sessionStorage.setItem("alby_refresh_token", tokenResponse.data.refresh_token);
+      }
+
+      const authorize = async () => {
+        // generate a new random string used as verifier
+        const codeVerifier = generateRandomString(64);
+        // we locally store this. we need this later to get the access token
+        window.localStorage.setItem("alby_code_verifier", codeVerifier);
+        const codeChallenge = await generateCodeChallenge(codeVerifier)
+
+        // current URL - where the user should be redirected back
+        const redirectUri = `${document.location.protocol}//${document.location.host}`;
+        // build the URL
+        const url = new URL(authorizeEndpoint);
+        url.searchParams.set('response_type', "code");
+        url.searchParams.set('client_id', clientId);
+        url.searchParams.set('scope', scope);
+        url.searchParams.set('code_challenge_method', 'S256');
+        url.searchParams.set('code_challenge', codeChallenge);
+        url.searchParams.set('redirect_uri', redirectUri);
+
+        // redirect the user to authorize
+        window.location = url.toString();
+      }
+
+      // Some helpers:
+      // here we use crypto-es/crypto-js to get a random string and to encode the challenge
+
+      // get a random string
+      const generateRandomString = (length) => {
+        const salt = CryptoES.lib.WordArray.random(length);
+        return salt.toString();
+      }
+
+      // Create a SHA256 of the code verifier and base64URL encode it. (note: this is not just base64 encoded)
+      const generateCodeChallenge = async (codeVerifier) => {
+        const digest = CryptoES.SHA256(codeVerifier);
+        const encodedDigest = digest.toString(CryptoES.enc.Base64).replace(/\+/g, '-').replace(/\//g, '_').replace(/\=+$/, '');
+        return encodedDigest;
+      }
+
+      async function main() {
+        // if we already got an access token in the session storage we use that one and load the boosts
+        if (window.sessionStorage.getItem("alby_access_token")) {
+          loadBoosts();
+        // otherwise we check if we got a code in the search params
+        // this is the case when the user has authorized the app and is redirected back from getalby.com
+        // we then take the code and request an access token
+        } else if (window.location.search) {
+          var args = new URLSearchParams(window.location.search);
+          var code = args.get("code");
+
+          // get the code verifier from the local storage. needed for security reasons to proof we initiated the authorization flow
+          const code_verifier = window.localStorage.getItem("alby_code_verifier");
+          window.localStorage.removeItem("alby_code_verifier");
+
+          if (code && code_verifier) {
+
+            // call the token endpoint to get the access token
+            const tokenResponse = await axios({
+              method: "POST",
+              url: tokenEndpoint,
+              auth: { username: clientId, password: clientSecret},
+              headers: { 'content-type': 'application/x-www-form-urlencoded' },
+              maxRedirects: 0,
+              data: `code=${code}&client_id=${clientId}&grant_type=authorization_code&redirect_uri=http://localhost:8080&code_verifier=${code_verifier}`
+            });
+
+            // we got the access token and use it to load the invoices
+            const access_token = tokenResponse.data.access_token;
+            const refresh_token = tokenResponse.data.refresh_token;
+            window.sessionStorage.setItem("alby_access_token", access_token);
+            window.sessionStorage.setItem("alby_refresh_token", refresh_token);
+            loadBoosts();
+          }
+        }
+
+
+        // reset the code verifier on load
+        window.localStorage.removeItem("alby_code_verifier");
+        document.getElementById("login").addEventListener("click", authorize);
+      };
+      // run the code once the DOM is loaded
+      document.addEventListener("DOMContentLoaded", main);
+    </script>
+  </body>
+</html>
